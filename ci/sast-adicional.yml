@@ -1,0 +1,57 @@
+rules:
+  - id: python.sql-query-interpolated
+    languages: [python]
+    severity: ERROR
+    message: Consulta SQL interpolada; usar parametros vinculados e validar os tipos recebidos.
+    metadata:
+      category: security
+      confidence: HIGH
+      impact: HIGH
+      cwe: ["CWE-89: SQL Injection"]
+    pattern-either:
+      - pattern: $CUR.execute($QUERY % $VALUE)
+      - pattern: $CUR.execute(f"...")
+  - id: python.shell-command-composed
+    languages: [python]
+    severity: ERROR
+    message: Comando de shell composto com variavel; usar argumentos separados e eliminar o shell.
+    metadata:
+      category: security
+      confidence: HIGH
+      impact: HIGH
+      cwe: ["CWE-78: OS Command Injection"]
+    pattern-either:
+      - pattern: os.system($A + $B)
+      - pattern: subprocess.run($A + $B, ..., shell=True, ...)
+      - pattern: subprocess.Popen($A + $B, ..., shell=True, ...)
+      - pattern: subprocess.call($A + $B, ..., shell=True, ...)
+  - id: python.jwt-signature-disabled
+    languages: [python]
+    severity: ERROR
+    message: A assinatura do JWT e desativada; a identidade nao e autenticada criptograficamente.
+    metadata:
+      category: security
+      confidence: HIGH
+      impact: HIGH
+      cwe: ["CWE-347: Improper Verification of Cryptographic Signature"]
+    pattern: 'jwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
+  - id: python.unsafe-pickle-loader
+    languages: [python]
+    severity: ERROR
+    message: Desserializacao pickle requer origem confiavel; para entradas externas usar JSON com esquema.
+    metadata:
+      category: security
+      confidence: HIGH
+      impact: HIGH
+      cwe: ["CWE-502: Deserialization of Untrusted Data"]
+    pattern: pickle.loads(...)
+  - id: python.unsafe-yaml-loader
+    languages: [python]
+    severity: ERROR
+    message: Loader YAML permite construir objetos; usar safe_load para dados externos.
+    metadata:
+      category: security
+      confidence: HIGH
+      impact: HIGH
+      cwe: ["CWE-502: Deserialization of Untrusted Data"]
+    pattern: yaml.load(..., Loader=yaml.Loader, ...)
