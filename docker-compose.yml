@@ -1,0 +1,14 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8530:8530"
+    environment:
+      PORTA: "8530"
+      FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:?defina_no_ambiente}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?defina_no_ambiente}
+  banco:
+    image: postgres:11
+    environment:
+      POSTGRES_USER: market
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina_no_ambiente}
