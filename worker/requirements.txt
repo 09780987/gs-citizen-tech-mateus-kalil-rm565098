@@ -1,0 +1,4 @@
+Pillow==5.2.0
+lxml==4.2.5
+cryptography==2.3
+paramiko==2.4.0
