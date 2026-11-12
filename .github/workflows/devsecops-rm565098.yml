@@ -1,0 +1,235 @@
+name: DevSecOps Citizen Tech - RM 565098
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: devsecops-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  build:
+    name: 1 - Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Validar a compilacao de todo o codigo
+        run: |
+          mkdir -p reports
+          python3 -m compileall -q app.py loja worker config
+          tar --exclude=.git --exclude=reports --exclude='__pycache__' -czf reports/aplicacao.tar.gz .
+          sha256sum reports/aplicacao.tar.gz > reports/build.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: build-${{ github.sha }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 7
+
+  sast:
+    name: 2 - SAST
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Analisar aplicacao, modulos, worker e templates
+        run: |
+          mkdir -p reports
+          python3 -m venv /tmp/sast-tools
+          /tmp/sast-tools/bin/pip install semgrep==1.185.0
+          /tmp/sast-tools/bin/semgrep scan --metrics off --disable-version-check --no-git-ignore \
+            --config p/security-audit --config p/python --config p/flask \
+            --config p/owasp-top-ten --config ci/sast-adicional.yml \
+            --json --output reports/sast.json app.py loja worker config templates Dockerfile
+          python3 ci/verificar_sast.py reports/sast.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: sast-${{ github.sha }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 7
+
+  segredos:
+    name: 3 - Segredos
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Conferir todo o historico sem divulgar valores na evidencia de CI
+        run: |
+          mkdir -p reports
+          sudo bash ci/instalar_scanners.sh
+          /opt/scanners/gitleaks git --config ci/gitleaks.toml --log-opts=--all \
+            --redact=100 --report-format json --report-path reports/segredos.json .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: segredos-${{ github.sha }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 7
+
+  sca:
+    name: 4 - SCA
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Examinar os dois manifestos e reprovar riscos altos e criticos
+        run: |
+          mkdir -p reports
+          sudo bash ci/instalar_scanners.sh
+          /opt/scanners/trivy fs --scanners vuln --format json --output reports/sca.json .
+          python3 ci/verificar_trivy.py reports/sca.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: sca-${{ github.sha }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 7
+
+  testes:
+    name: 5 - Testes
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Executar testes funcionais no runtime da aplicacao
+        run: |
+          mkdir -p reports
+          docker build -t ctmarket-test:565098 .
+          docker run --rm --mount type=bind,source="$PWD/reports",target=/evidencias \
+            ctmarket-test:565098 sh -ec \
+            'python -m pip install pytest==7.4.4 && python -m pytest -q -p no:cacheprovider --junitxml=/evidencias/testes.xml tests'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: testes-${{ github.sha }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 7
+
+  imagem:
+    name: 6 - Build e varredura da imagem
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Construir e conferir Dockerfile e imagem
+        run: |
+          mkdir -p reports
+          docker build -t ctmarket:565098 .
+          sudo bash ci/instalar_scanners.sh
+          /opt/scanners/trivy config --format json --output reports/trivy-config.json .
+          /opt/scanners/trivy image --scanners vuln --format json --output reports/trivy-image.json ctmarket:565098
+          python3 ci/verificar_trivy.py reports/trivy-config.json reports/trivy-image.json
+          docker save ctmarket:565098 -o reports/imagem.tar
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: imagem-${{ github.sha }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 7
+
+  dast:
+    name: 7 - Gate de evidencia DAST ativa (integracao pendente)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    env:
+      DAST_REPORT_RUN_ID: ${{ vars.DAST_REPORT_RUN_ID }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Exigir evidencia produzida para este commit
+        run: |
+          mkdir -p reports
+          test -n "$DAST_REPORT_RUN_ID"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dast-ativo-${{ github.sha }}
+          path: reports/
+          run-id: ${{ vars.DAST_REPORT_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Reprovar ausencia de varredura ativa ou risco alto
+        run: python3 ci/verificar_dast.py reports/dast.json reports/dast-contexto.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: dast-validado-${{ github.sha }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: 8 - Deploy em producao
+    needs: [build, sast, segredos, sca, testes, imagem, dast]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: producao
+    permissions:
+      contents: read
+      packages: write
+    env:
+      DEPLOY_WEBHOOK_URL: ${{ secrets.DEPLOY_WEBHOOK_URL }}
+      REGISTRY_TOKEN: ${{ github.token }}
+    steps:
+      - name: Conferir configuracao de producao
+        run: test -n "$DEPLOY_WEBHOOK_URL"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: imagem-${{ github.sha }}
+          path: reports/
+      - name: Publicar a imagem aprovada e solicitar o rollout
+        env:
+          REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          docker load -i reports/imagem.tar
+          IMAGE="ghcr.io/${REPO,,}:$COMMIT"
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker tag ctmarket:565098 "$IMAGE"
+          docker push "$IMAGE"
+          python3 -c 'import json,os; print(json.dumps({"image": "ghcr.io/"+os.environ["REPO"].lower()+":"+os.environ["COMMIT"], "commit":os.environ["COMMIT"], "rm":"565098"}))' > deploy.json
+          curl --proto '=https' --tlsv1.2 --fail-with-body --silent --show-error \
+            -H 'Content-Type: application/json' --data-binary @deploy.json "$DEPLOY_WEBHOOK_URL"
