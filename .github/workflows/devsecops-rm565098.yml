@@ -54,7 +54,7 @@ jobs:
           mkdir -p reports
           python3 -m venv /tmp/sast-tools
           /tmp/sast-tools/bin/pip install semgrep==1.185.0
-          /tmp/sast-tools/bin/semgrep scan --metrics off --disable-version-check --no-git-ignore \
+          /tmp/sast-tools/bin/semgrep scan --error --metrics off --disable-version-check --no-git-ignore \
             --config p/security-audit --config p/python --config p/flask \
             --config p/owasp-top-ten --config ci/sast-adicional.yml \
             --json --output reports/sast.json app.py loja worker config templates Dockerfile deploy
@@ -104,7 +104,7 @@ jobs:
         run: |
           mkdir -p reports
           sudo bash ci/instalar_scanners.sh
-          /opt/scanners/trivy fs --scanners vuln --format json --output reports/sca.json .
+          /opt/scanners/trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --format json --output reports/sca.json .
           python3 ci/verificar_trivy.py reports/sca.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
@@ -153,7 +153,7 @@ jobs:
           docker build -t ctmarket:565098 .
           sudo bash ci/instalar_scanners.sh
           /opt/scanners/trivy config --format json --output reports/trivy-config.json .
-          /opt/scanners/trivy image --scanners vuln --format json --output reports/trivy-image.json ctmarket:565098
+          /opt/scanners/trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --format json --output reports/trivy-image.json ctmarket:565098
           python3 ci/verificar_trivy.py reports/trivy-config.json reports/trivy-image.json
           docker tag ctmarket:565098 "localhost/ctmarket-release:565098-${GITHUB_SHA}"
           docker save "localhost/ctmarket-release:565098-${GITHUB_SHA}" -o reports/imagem.tar
