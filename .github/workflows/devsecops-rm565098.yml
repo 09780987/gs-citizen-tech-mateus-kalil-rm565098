@@ -29,7 +29,7 @@ jobs:
       - name: Validar a compilacao de todo o codigo
         run: |
           mkdir -p reports
-          python3 -m compileall -q app.py loja worker config
+          python3 -m compileall -q app.py loja worker config deploy
           tar --exclude=.git --exclude=reports --exclude='__pycache__' -czf reports/aplicacao.tar.gz .
           sha256sum reports/aplicacao.tar.gz > reports/build.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -57,7 +57,7 @@ jobs:
           /tmp/sast-tools/bin/semgrep scan --metrics off --disable-version-check --no-git-ignore \
             --config p/security-audit --config p/python --config p/flask \
             --config p/owasp-top-ten --config ci/sast-adicional.yml \
-            --json --output reports/sast.json app.py loja worker config templates Dockerfile
+            --json --output reports/sast.json app.py loja worker config templates Dockerfile deploy
           python3 ci/verificar_sast.py reports/sast.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
@@ -155,7 +155,9 @@ jobs:
           /opt/scanners/trivy config --format json --output reports/trivy-config.json .
           /opt/scanners/trivy image --scanners vuln --format json --output reports/trivy-image.json ctmarket:565098
           python3 ci/verificar_trivy.py reports/trivy-config.json reports/trivy-image.json
-          docker save ctmarket:565098 -o reports/imagem.tar
+          docker tag ctmarket:565098 "localhost/ctmarket-release:565098-${GITHUB_SHA}"
+          docker save "localhost/ctmarket-release:565098-${GITHUB_SHA}" -o reports/imagem.tar
+          python3 deploy/criar_manifesto.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -199,37 +201,33 @@ jobs:
           retention-days: 7
 
   deploy:
-    name: 8 - Deploy em producao
+    name: 8 - Deploy em producao na VM RM565098
     needs: [build, sast, segredos, sca, testes, imagem, dast]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, deploy-rm565098]
     timeout-minutes: 15
     environment:
       name: producao
     permissions:
       contents: read
-      packages: write
-    env:
-      DEPLOY_WEBHOOK_URL: ${{ secrets.DEPLOY_WEBHOOK_URL }}
-      REGISTRY_TOKEN: ${{ github.token }}
     steps:
-      - name: Conferir configuracao de producao
-        run: test -n "$DEPLOY_WEBHOOK_URL"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: imagem-${{ github.sha }}
           path: reports/
-      - name: Publicar a imagem aprovada e solicitar o rollout
+      - name: Publicar imagem aprovada na VM sem privilegios administrativos
         env:
-          REPO: ${{ github.repository }}
           COMMIT: ${{ github.sha }}
-          ACTOR: ${{ github.actor }}
         run: |
-          docker load -i reports/imagem.tar
-          IMAGE="ghcr.io/${REPO,,}:$COMMIT"
-          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
-          docker tag ctmarket:565098 "$IMAGE"
-          docker push "$IMAGE"
-          python3 -c 'import json,os; print(json.dumps({"image": "ghcr.io/"+os.environ["REPO"].lower()+":"+os.environ["COMMIT"], "commit":os.environ["COMMIT"], "rm":"565098"}))' > deploy.json
-          curl --proto '=https' --tlsv1.2 --fail-with-body --silent --show-error \
-            -H 'Content-Type: application/json' --data-binary @deploy.json "$DEPLOY_WEBHOOK_URL"
+          python3 deploy/deploy_vm.py --archive reports/imagem.tar \
+            --manifest reports/deploy-manifest.json --commit "$COMMIT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: deploy-${{ github.sha }}
+          path: reports/deploy.json
+          if-no-files-found: error
+          retention-days: 7
